@@ -874,6 +874,7 @@ A row is one <b>(submission, t)</b> pair, scored only while the submission is st
 <li><b>Domain quirk, NOT leakage:</b> OUTBOUND / quotes can precede the first INBOUND — intake happens via <code>createdDate</code> (off-channel), carriers quote off-channel. Kept.</li>
 <li><b>Char outliers</b> (max 43k, p99 2.3k): kept, tamed by <code>log1p</code> — not deleted.</li>
 <li><b>Censoring:</b> by t=30 &gt;50% have resolved; only score <b>open-at-t</b> submissions.</li>
+<li><b>No imputation:</b> the only nulls are the 1,144 quotes' (unused) email fields &rarr; the pipeline's median imputer fills <b>nothing</b> (0 residual NaN). Absence is encoded by design: no activity by t &rarr; <b>0</b>; no prior history &rarr; <b>base rate</b> (62% cold-start).</li>
 </ul></div>
 
 <h2>2. Features chosen (Task 1)</h2>
