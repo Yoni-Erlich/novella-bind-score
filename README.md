@@ -9,19 +9,18 @@ and — crucially — **day-0 predictions work** (AUC 0.76, up from a coin-flip)
 
 ---
 
-## Reports (start here)
-Two **self-contained** HTML reports are committed under `reports/` — every chart is embedded, so they need
-no data and no server. They don't render inline on GitHub; to read them:
+## Report (start here)
+The **self-contained** HTML report `reports/final_report.html` is committed under `reports/` — every chart is
+embedded, so it needs no data and no server. It doesn't render inline on GitHub; to read it:
 
 > open the file on GitHub → **Download raw file** → open the downloaded `.html` in any browser.
+> (Or just clone the repo — which you'd do to run the code anyway — and open the file locally.)
 
-| report | what it is |
-|---|---|
-| [`reports/final_report.html`](reports/final_report.html) | the **deliverable** — data story, the 3 tasks, results, limitations |
-| [`reports/pipeline_and_model.html`](reports/pipeline_and_model.html) | study/interview companion — pipeline walkthrough + why-logistic |
+[`reports/final_report.html`](reports/final_report.html) — the **deliverable**: data story, the 3 tasks,
+results, limitations.
 
-Both are **generated from the live code** (numbers can't drift from the model). To rebuild them yourself, see
-[Regenerate the reports](#regenerate-the-reports) below.
+It's **generated from the live code** (numbers can't drift from the model). To rebuild it yourself, see
+[Regenerate the report](#regenerate-the-report) below.
 
 ---
 
@@ -33,15 +32,14 @@ challenge_1/
 │   ├── features.py           # feature(submission_id, t) + build_panel()            [Task 1]
 │   ├── model.py              # train_bind_model() + bind_score(submission_id, t)    [Task 3]
 │   └── evaluate.py           # metrics, baselines, XGBoost comparison
-├── scripts/                  # exploratory checks + the two report builders
+├── scripts/                  # exploratory checks + the report builder
 ├── reports/
-│   ├── final_report.html         # the deliverable (self-contained)
-│   └── pipeline_and_model.html   # study/interview companion (self-contained)
+│   └── final_report.html     # the deliverable (self-contained)
 ├── data/                     # NOT shipped — drop the provided CSVs here (see "Run it")
 └── pyproject.toml
 ```
 > The raw `data/` CSVs, EDA notebooks, and figure sources are part of the full project but are **not** in this
-> repo (it's the code + rendered reports). Everything below runs once you supply the two data files.
+> repo (it's the code + the rendered report). Everything below runs once you supply the two data files.
 
 ## Run it
 ```bash
@@ -66,11 +64,10 @@ bind_score(submission_id=1, t=7, subs=subs, events=events, fitted=fit)   # -> P(
 > `bind_score`/`feature` honor the one-row challenge contract and rebuild the panel per call — fine for
 > spot-checks, but use `build_panel(...)` + the fitted model directly for batch scoring.
 
-### Regenerate the reports
-With the data in place, rebuild either HTML from the live code:
+### Regenerate the report
+With the data in place, rebuild the HTML from the live code:
 ```bash
 poetry run python scripts/build_html_report.py     # -> reports/final_report.html
-poetry run python scripts/build_pipeline_doc.py    # -> reports/pipeline_and_model.html
 ```
 
 ---
@@ -143,7 +140,7 @@ feature *selection* happens in train CV.)
 Also tested: **one pooled model vs three per-`t` models** → 0.744 vs 0.738 (pooled wins, esp. at day-0); class-weight
 tuning → no effect on ranking.
 
-> Full detail, charts, and the cautionary SHAP tale live in the two HTML reports above.
+> Full detail, charts, and the cautionary SHAP tale live in the HTML report above.
 
 ---
 

@@ -19,3 +19,6 @@ handoffs/
 reports/figures/
 *.csv
 *.pdf
+
+# internal scratch / planning
+staff/

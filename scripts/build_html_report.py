@@ -19,7 +19,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    precision_recall_curve,
+)
 
 R = Path(__file__).resolve().parents[1]
 import sys
@@ -27,7 +31,7 @@ import sys
 sys.path.insert(0, str(R))
 from src.preprocessing import validate, clean
 from src.features import build_panel, MODEL_FEATURES
-from src.model import standardized_coefficients
+from src.model import standardized_coefficients, make_model
 from src.evaluate import get_test_scores, precision_at_k
 
 # ---------- palette ----------
@@ -236,15 +240,141 @@ for t in (0, 7, 30):
     per_t_auc[t] = roc_auc_score(y[m], logi[m])
     per_t_pl[t] = prec_lift(y[m], logi[m])
 
-# Task-2 ranking
+# Task-2 ranking — keep magnitude for significance, but also expose the SIGN
 uni = {f: roc_auc_score(y, test[f].values) for f in MODEL_FEATURES}
-coef = standardized_coefficients(fit)
-rank = pd.DataFrame({"uni_auc": uni, "coef": coef}).sort_values(
-    "uni_auc", ascending=False
+coef = standardized_coefficients(fit)  # |coef| (magnitude = significance)
+signed = pd.Series(
+    fit["model"].named_steps["logisticregression"].coef_[0], index=MODEL_FEATURES
 )
+rank = pd.DataFrame({"uni_auc": uni, "coef": coef, "signed": signed}).sort_values(
+    "coef", ascending=False
+)
+# outbound's coefficient sign is an artifact of the transform — show it flips across encodings
+_train = fit["train"]
+_b4 = ["agent_bind_rate", "has_quote_by_t", "n_inbound_by_t", "t"]
 
-# ---------- Fig 3: feature ranking ----------
-fig, ax = plt.subplots(figsize=(7.5, 2.9))
+
+def _ob_coef(col):
+    trX = _train[_b4].copy()
+    trX["ob"] = col
+    return float(
+        make_model()
+        .fit(trX, _train.label)
+        .named_steps["logisticregression"]
+        .coef_[0][-1]
+    )
+
+
+_edges = np.unique(np.quantile(_train.outbound_chars_by_t, np.linspace(0, 1, 6)))[1:-1]
+ob_coef_raw = _ob_coef(_train.outbound_chars_by_t.values)
+ob_coef_bin = _ob_coef(np.digitize(_train.outbound_chars_by_t, _edges))
+ob_coef_log = float(signed["outbound_chars_log"])
+corr_ob_quote = float(panel_eda.outbound_chars_log.corr(panel_eda.has_quote_by_t))
+corr_ob_inb = float(panel_eda.outbound_chars_log.corr(panel_eda.n_inbound_by_t))
+corr_ob_label = float(panel_eda.outbound_chars_log.corr(panel_eda.label))
+
+# ===== Exhaustive best-subset selection (live evidence for §2.2) =====
+# 4 real predictors (t is the structural snapshot index, always in) -> 2^4-1 = 15 subsets,
+# so exhaustive search is trivial and optimal (it's what greedy forward selection approximates).
+# Grouped (submissionId) 5-fold CV precision@20, averaged over seeds, on TRAIN only.
+# Reproduced standalone by scripts/best_subset_selection.py.
+from itertools import combinations as _combos
+from sklearn.model_selection import StratifiedGroupKFold as _SGKF
+
+_bss_train = fit["train"]
+_CAND = ["agent_bind_rate", "outbound_chars_log", "has_quote_by_t", "n_inbound_by_t"]
+_SHORT = {
+    "agent_bind_rate": "agent",
+    "outbound_chars_log": "outbound",
+    "has_quote_by_t": "quote",
+    "n_inbound_by_t": "inbound",
+}
+_SEEDS = (0, 1, 2, 3, 4)
+
+
+def _cv_pk_auc(tr, feats):
+    ps, aucs = [], []
+    for sd in _SEEDS:
+        cv = _SGKF(5, shuffle=True, random_state=sd)
+        fp, fa = [], []
+        for a, b in cv.split(tr[feats], tr.label, groups=tr.submissionId):
+            mm = make_model().fit(tr[feats].iloc[a], tr.label.iloc[a])
+            sc = mm.predict_proba(tr[feats].iloc[b])[:, 1]
+            yy = tr.label.iloc[b].values
+            fp.append(precision_at_k(yy, sc))
+            fa.append(roc_auc_score(yy, sc))
+        ps.append(np.mean(fp))
+        aucs.append(np.mean(fa))
+    return float(np.mean(ps)), float(np.mean(aucs))
+
+
+_bss = []
+for _kk_ in range(1, len(_CAND) + 1):
+    for _c in _combos(_CAND, _kk_):
+        _p, _a = _cv_pk_auc(_bss_train, list(_c) + ["t"])
+        _bss.append(
+            {
+                "feats": "+".join(_SHORT[f] for f in _c),
+                "ob": "outbound_chars_log" in _c,
+                "k": _kk_,
+                "cv_p": _p,
+                "cv_auc": _a,
+            }
+        )
+_bss.sort(key=lambda r: -r["cv_p"])
+bss_best = _bss[0]
+bss_full = next(r for r in _bss if r["k"] == len(_CAND))
+bss_ob_alone = next(r for r in _bss if r["feats"] == "outbound")
+bss_best_feats, bss_best_p = bss_best["feats"], bss_best["cv_p"]
+bss_full_p, bss_full_auc = bss_full["cv_p"], bss_full["cv_auc"]
+bss_oba_p = bss_ob_alone["cv_p"]
+
+
+def _holdout(short_feats):
+    cols = [f for f, s in _SHORT.items() if s in short_feats] + ["t"]
+    cols = list(dict.fromkeys(cols))
+    mm = make_model().fit(_bss_train[cols], _bss_train.label)
+    sc = mm.predict_proba(test[cols])[:, 1]
+    return roc_auc_score(y, sc), precision_at_k(y, sc, 0.20)
+
+
+ho_win_auc, ho_win_p = _holdout(bss_best_feats.split("+"))
+ho_full_auc, ho_full_p = _holdout(["agent", "outbound", "quote", "inbound"])
+# the noise argument, in deals: top-20% bucket size, hits per model, and p@20's own SE
+bss_topk = int(np.ceil(0.20 * len(test)))
+hits_full = int(round(ho_full_p * bss_topk))
+hits_win = int(round(ho_win_p * bss_topk))
+hits_full_minus_win = hits_full - hits_win
+p20_se = float(np.sqrt(ho_full_p * (1 - ho_full_p) / bss_topk))
+ho_p_gap = ho_full_p - ho_win_p
+cv_top_spread = _bss[0]["cv_p"] - _bss[3]["cv_p"]
+n_pos = int(subs.label.sum())
+
+# empirical per-set measurement error: rerun 5-fold CV on the FIXED full set across many fold splits
+_err_runs = []
+for _sd in range(20):
+    _cv = _SGKF(5, shuffle=True, random_state=_sd)
+    _ps = []
+    for _a, _b in _cv.split(
+        _bss_train[MODEL_FEATURES], _bss_train.label, groups=_bss_train.submissionId
+    ):
+        _mm = make_model().fit(
+            _bss_train[MODEL_FEATURES].iloc[_a], _bss_train.label.iloc[_a]
+        )
+        _ps.append(
+            precision_at_k(
+                _bss_train.label.iloc[_b].values,
+                _mm.predict_proba(_bss_train[MODEL_FEATURES].iloc[_b])[:, 1],
+            )
+        )
+    _err_runs.append(float(np.mean(_ps)))
+n_err_runs = len(_err_runs)
+_err_runs = np.array(_err_runs)
+cv_run_std = float(_err_runs.std(ddof=1))
+cv_run_lo, cv_run_hi = float(_err_runs.min()), float(_err_runs.max())
+
+# ---------- Fig 3: signed feature coefficients (diverging) ----------
+fig, ax = plt.subplots(figsize=(7.8, 3.0))
 names = [
     "agent_bind_rate",
     "has_quote_by_t",
@@ -252,19 +382,32 @@ names = [
     "n_inbound_by_t",
     "t",
 ]
-names = [n for n in names if n in coef.index]
-vals = [coef[n] for n in names]
-bars = ax.barh(
-    names[::-1], vals[::-1], color=[GOLD, PURPLE2, PURPLE2, PURPLE2, GREY][::-1]
-)
-ax.set_title(
-    "Task 2 — feature significance (|standardized logistic coef|)", fontweight="bold"
-)
+names = [n for n in names if n in signed.index]
+vals = [float(signed[n]) for n in names]
+
+
+def _barcol(n, v):
+    if n == "agent_bind_rate":
+        return GOLD
+    return PURPLE2 if v >= 0 else "#e76f51"
+
+
+cols = [_barcol(n, v) for n, v in zip(names, vals)]
+bars = ax.barh(names[::-1], vals[::-1], color=cols[::-1])
+ax.axvline(0, color="#888", lw=1)
+ax.set_title("Task 2 — signed standardized logistic coefficients", fontweight="bold")
 for b, v in zip(bars, vals[::-1]):
+    ha = "left" if v >= 0 else "right"
     ax.text(
-        v + 0.004, b.get_y() + b.get_height() / 2, f"{v:.2f}", va="center", fontsize=8.5
+        v + (0.006 if v >= 0 else -0.006),
+        b.get_y() + b.get_height() / 2,
+        f"{v:+.3f}",
+        va="center",
+        ha=ha,
+        fontsize=8.5,
     )
-ax.set_xlim(0, max(vals) * 1.18)
+m = max(abs(min(vals)), abs(max(vals)))
+ax.set_xlim(-m * 1.4, m * 1.3)
 FIG_RANK = b64(fig)
 
 # ---------- Fig 4: baselines ----------
@@ -299,7 +442,13 @@ w = 0.36
 model_p = [overall_pl[k][0] for k in ks]
 rand_p = [base_rate] * len(ks)
 b1 = a1.bar(x - w / 2, model_p, w, color=GOLD, label="model (work top-k%)")
-b2 = a1.bar(x + w / 2, rand_p, w, color=GREY, label="random (base rate)")
+b2 = a1.bar(
+    x + w / 2,
+    rand_p,
+    w,
+    color=GREY,
+    label="random (no-skill)",
+)
 for b, k in zip(b1, ks):
     a1.text(
         b.get_x() + b.get_width() / 2,
@@ -328,6 +477,34 @@ a2.set_xlabel("fraction of queue worked")
 a2.set_ylabel("fraction of binders captured")
 a2.legend(fontsize=8, loc="lower right")
 FIG_PREC = b64(fig)
+
+# ---------- Fig: precision-recall curve ----------
+fig, ax = plt.subplots(figsize=(6.6, 3.7))
+prec_c, rec_c, _ = precision_recall_curve(y, logi)
+ap = average_precision_score(y, logi)
+ap_agent = average_precision_score(y, scores["agent_bind_rate only"])
+prec_a, rec_a, _ = precision_recall_curve(y, scores["agent_bind_rate only"])
+ax.plot(
+    rec_c, prec_c, color=PURPLE, lw=2.2, label=f"logistic (final) — PR-AUC {ap:.3f}"
+)
+ax.plot(
+    rec_a,
+    prec_a,
+    color=PURPLE2,
+    lw=1.6,
+    ls="-.",
+    label=f"agent_bind_rate only — PR-AUC {ap_agent:.3f}",
+)
+ax.axhline(
+    base_rate, color=GREY, ls="--", lw=1.4, label=f"random (no-skill) — {base_rate:.3f}"
+)
+ax.set_xlabel("recall (share of binders found)")
+ax.set_ylabel("precision (share of worked that bind)")
+ax.set_ylim(0, 1.02)
+ax.set_xlim(0, 1.0)
+ax.legend(fontsize=8.5, loc="upper right")
+ax.set_title("Precision–Recall curve", fontweight="bold")
+FIG_PR = b64(fig)
 
 # ---------- Fig 6: per-t ----------
 cold_t = (test.agent_prior_n == 0).values
@@ -430,6 +607,31 @@ base_tbl = table(
     hl="logistic (final)",
 )
 
+# best-subset evidence table for §2.2: top-4 subsets + the worst (outbound alone), full highlighted
+_bss_rows = [
+    [
+        r["feats"] + "+t",
+        "✓" if r["ob"] else "—",
+        f'{r["cv_p"]:.3f}',
+        f'{r["cv_auc"]:.3f}',
+    ]
+    for r in _bss[:4]
+]
+_bss_rows.append(["…", "", "…", "…"])
+_bss_rows.append(
+    [
+        bss_ob_alone["feats"] + "+t (worst)",
+        "✓",
+        f'{bss_ob_alone["cv_p"]:.3f}',
+        f'{bss_ob_alone["cv_auc"]:.3f}',
+    ]
+)
+bss_tbl = table(
+    ["feature set (+t)", "has outbound", "CV p@20", "CV AUC"],
+    _bss_rows,
+    hl=bss_full["feats"] + "+t",
+)
+
 # "why not agent_bind_rate alone" — segment the test by customer history
 _cold = (test.agent_prior_n == 0).values
 
@@ -465,13 +667,20 @@ seg_tbl = table(
 )
 
 rank_tbl = table(
-    ["rank", "feature", "univariate test AUC", "|std. coef|"],
+    [
+        "rank",
+        "feature",
+        "univariate test AUC",
+        "|std. coef|",
+        "signed coef (direction)",
+    ],
     [
         [
             i + 1,
             f"<code>{f}</code>",
             f"{rank.loc[f, 'uni_auc']:.3f}",
             f"{rank.loc[f, 'coef']:.3f}",
+            f"{rank.loc[f, 'signed']:+.3f} ({'↑ binds' if rank.loc[f, 'signed'] >= 0 else '↓ binds'})",
         ]
         for i, f in enumerate(rank.index)
     ],
@@ -616,8 +825,9 @@ html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <div class="tldr">
 <h2>TL;DR</h2>
 <p><b>Result.</b> Working the model's <b>top 20%</b> of the queue binds at <b>{overall_pl[0.20][0]:.0%}</b> &mdash; a
-<b>{overall_pl[0.20][1]:.1f}&times; lift</b> over random (base rate {base_rate:.0%}) &mdash; holding at 30%/50%; overall
-ranking ROC-AUC <b>{roc_auc_score(y, logi):.3f}</b>. Precision@k is our primary metric (brokers work a ranked queue).</p>
+<b>{overall_pl[0.20][1]:.1f}&times; lift over random</b> &mdash; holding at 30%/50%; overall ranking ROC-AUC
+<b>{roc_auc_score(y, logi):.3f}</b>, PR-AUC <b>{average_precision_score(y, logi):.3f}</b>. Precision@k is our primary
+metric (brokers work a ranked queue).</p>
 <p><b>Features (4 + <code>t</code>).</b> <code>agent_bind_rate</code> (repeat-<i>customer</i> close-rate),
 <code>has_quote_by_t</code>, <code>outbound_chars_log</code> (broker effort), <code>n_inbound_by_t</code>, plus the
 snapshot time <code>t</code>. By significance: <code>agent_bind_rate</code> &Gt; <code>has_quote</code> &gt; the rest.</p>
@@ -631,7 +841,7 @@ value keeps growing toward t=30.</p>
 </div>
 
 <div class="kpis">
-<div class="kpi"><b>{overall_pl[0.20][0]:.0%}</b><span>precision @ top-20% &middot; {overall_pl[0.20][1]:.1f}&times; lift (base {base_rate:.0%})</span></div>
+<div class="kpi"><b>{overall_pl[0.20][0]:.0%}</b><span>precision @ top-20% &middot; {overall_pl[0.20][1]:.1f}&times; over random</span></div>
 <div class="kpi"><b>{roc_auc_score(y, logi):.3f}</b><span>overall ROC-AUC (floor 0.50)</span></div>
 <div class="kpi"><b>{per_t_auc[0]:.3f}</b><span>day-0 AUC (was ~0.50 before customer history)</span></div>
 <div class="kpi"><b>4&nbsp;+&nbsp;1</b><span>features: 4 predictive + <code>t</code> context var</span></div>
@@ -669,40 +879,116 @@ A row is one <b>(submission, t)</b> pair, scored only while the submission is st
 attachments, char-distribution stats, response-latency, velocity and calendar all add nothing beyond raw volume
 (see Appendix A).</p>
 {img(FIG_SIGNAL, "Fig 2 — What predicts binding: (left) a received quote sharply raises bind rate, more so as t grows; (mid) submissions split into outbound-volume QUARTILES — Q1 = lowest-25% broker writing … Q4 = highest-25% — bind rate rises monotonically (more broker effort/volume → higher bind rate); (right) repeat customers with a strong prior track record bind far above the base rate, first-timers sit near it.")}
-<p>The 4 predictive features + <code>t</code> (a context variable that lets one pooled model adapt across snapshots):</p>
-{table(["feature", "what it captures", "leakage-safe basis"],
-[["<code>agent_bind_rate</code>", "repeat-<b>customer</b> close-rate (smoothed)", "only the customer's subs <i>resolved before</i> this createdDate"],
- ["<code>has_quote_by_t</code>", "funnel gate — a carrier quote exists", "events with d ≤ t"],
- ["<code>outbound_chars_log</code>", "broker effort (log1p of OUTBOUND chars)", "events with d ≤ t"],
- ["<code>n_inbound_by_t</code>", "customer engagement (replies)", "events with d ≤ t"],
- ["<code>t</code>", "snapshot time (0/7/30)", "structural"]])}
+<p>The 4 predictive features + <code>t</code> (a context variable that lets one pooled model adapt across snapshots).
+This table is the one-stop summary of <b>what we did with each feature</b> — what it captures, how it's built
+(leakage-safe), and its preprocessing:</p>
+{table(["feature", "captures", "how it's built (leakage-safe)", "preprocessing"],
+[["<code>agent_bind_rate</code>", "repeat-<b>customer</b> close-rate", "agent's deals <i>resolved before</i> createdDate", "empirical-Bayes smoothing (&alpha;=5; cold-start→base rate) → standardize"],
+ ["<code>has_quote_by_t</code>", "funnel gate — carrier quote exists", "any QUOTE_RECEIVED with d ≤ t (binary)", "standardize"],
+ ["<code>outbound_chars_log</code>", "broker effort", "Σ OUTBOUND chars with d ≤ t", "<b>log1p</b> → standardize"],
+ ["<code>n_inbound_by_t</code>", "customer engagement (replies)", "count INBOUND with d ≤ t", "standardize"],
+ ["<code>t</code>", "snapshot time (context var)", "the row's t (0/7/30)", "standardize"]])}
+<p class="muted">Standardize = z-score <code>z=(x−μ)/σ</code> (μ/σ from train only), inside the pipeline
+<code>Impute(median) → StandardScaler → Logistic</code>.</p>
 <div class="note"><b>Why <code>agent_bind_rate</code> matters most:</b> <code>agentEmail</code> is Novella's <b>customer</b> (the retail
 agent), <b>not</b> the broker. A customer's prior close-rate is known at t=0 — the one strong signal available on
 day 0 (for <i>returning</i> customers), when nothing has happened on the submission yet. Adding it lifted the day-0
 <b>ranking</b> from a coin-flip (<b>ROC-AUC ≈0.50</b>) to <b>{per_t_auc[0]:.2f}</b>.
-<br><span class="muted">Note: 0.50 is the AUC floor (random ranker), not a bind rate. The base bind <i>rate</i> is {base_rate:.0%} —
-that's the predicted probability a first-time customer gets (see the cold-start callout in &sect;3.3).</span></div>
+<br><span class="muted">Note: 0.50 is the AUC floor (random ranker), not a bind rate. The {base_rate:.0%} base rate is the
+<code>agent_bind_rate</code> <i>feature</i> value a first-timer gets (see the cold-start callout in &sect;3.3).</span></div>
+
+<div class="note"><b>Building <code>agent_bind_rate</code> — the no-history dilemma &amp; how it updates.</b>
+Two problems: a <b>first-time agent has no history</b> (no rate to compute), and an agent with a single prior deal
+that happened to bind would naively read as <b>100%</b>. Solution — <b>empirical-Bayes smoothing</b>: blend the
+agent's own record with the global average, weighted by how much history they have:
+<div style="text-align:center;margin:8px 0"><code>rate = (prior_binds + &alpha;&middot;g) / (prior_n + &alpha;)</code>&nbsp;&nbsp;
+<span class="muted">&alpha; = 5 pseudo-deals, g = base rate ({base_rate:.0%})</span></div>
+<ul>
+<li><b>No history</b> (<code>prior_n = 0</code>) → <code>rate = g</code>: a new customer is "assumed average until proven otherwise."</li>
+<li><b>Self-updating:</b> each resolved deal grows <code>prior_n</code>, sliding the estimate from <code>g</code> toward
+the agent's <i>true</i> close-rate; one fluke deal is diluted by the 5 pseudo-deals.</li>
+<li><b>Leakage-safe:</b> uses only the agent's deals <i>resolved before</i> this submission's <code>createdDate</code>;
+<code>g</code> is the <b>train</b> base rate (recomputed after the split).</li>
+</ul>
+<p class="muted" style="margin:6px 0 0"><b>Worked example</b> (g = {base_rate:.0%}, &alpha; = 5):
+new agent <b>0/0</b> → <b>{base_rate:.0%}</b> &nbsp;·&nbsp; one win <b>1/1</b> → (1 + 5&middot;{base_rate:.2f})/6 =
+<b>{(1+5*base_rate)/6:.0%}</b> (not 100%) &nbsp;·&nbsp; established <b>8/20</b> → (8 + 5&middot;{base_rate:.2f})/25 =
+<b>{(8+5*base_rate)/25:.0%}</b> (≈ their true 40%). Thin history stays near {base_rate:.0%}; lots of history trusts the agent.</p></div>
 
 <h3>2.1 Feature significance ranking (Task 2)</h3>
-{img(FIG_RANK, "Fig 3 — Standardized logistic coefficients (contribution given the others). Ranked via the linear lens, not SHAP (SHAP on an overfit tree was a high-cardinality artifact — see Appendix A).")}
+<p>We rank by the <b>magnitude</b> of the standardized coefficient (significance, given the other features), and also
+report its <b>sign</b> (direction). Ranked via the linear lens, not SHAP (SHAP on the overfit tree was a
+high-cardinality artifact — Appendix A).</p>
+{img(FIG_RANK, "Fig 3 — Signed standardized logistic coefficients. Bar length = significance (how much the model relies on the feature given the others); bar direction = whether it raises (right) or lowers (left) the bind odds. agent_bind_rate and has_quote are the two big positive drivers; outbound_chars is negative (see note).")}
 {rank_tbl}
-<p class="muted">Customer track record &Gt; got-a-quote &gt; broker effort &asymp; customer replies &gt; t.</p>
+<p class="muted">Significance order (|coef|): customer track record &Gt; got-a-quote &gt; broker-effort &asymp; customer replies &gt; t.
+Four of the five signs are intuitive; <code>outbound_chars</code> is negative — explained in &sect;2.2.</p>
+
+<h3>2.2 Explainability — what each feature means</h3>
+<p>Plain-English read of each coefficient. <b>Four are exactly what you'd expect; <code>outbound_chars</code>'s sign is
+a transform artifact and should not be interpreted</b> (see the box).</p>
+{table(["feature", "sign", "plain meaning"],
+[["<code>agent_bind_rate</code>", "+", "the customer's past close-rate — trusted repeat customers bind more. <i>Intuitive.</i>"],
+ ["<code>has_quote_by_t</code>", "+", "a carrier quote arrived — the funnel gate; big jump in odds. <i>Intuitive.</i>"],
+ ["<code>n_inbound_by_t</code>", "+", "customer replies = engagement → mildly higher odds. <i>Intuitive.</i>"],
+ ["<code>t</code>", "≈0", "snapshot time — a context variable so one pooled model serves t=0/7/30; no standalone meaning."],
+ ["<code>outbound_chars_log</code>", "<b>−</b>", "broker effort — sign is <b>not interpretable</b> (an artifact). See below."]])}
+<div class="note warn"><b><code>outbound_chars</code>'s negative coefficient has no real meaning — it's a collinearity artifact. The feature is redundant (kept, but not load-bearing); only its <i>sign</i> is uninterpretable.</b>
+<ul>
+<li><b>The sign isn't robust.</b> Refitting with only the outbound encoding changed, its coefficient is
+<b>{ob_coef_raw:+.3f}</b> (raw) · <b>{ob_coef_log:+.3f}</b> (log1p, current) · <b>{ob_coef_bin:+.3f}</b> (quantile bins) —
+it <b>flips sign with the transform</b>, while held-out AUC is identical (~0.744). The sign is decided by an arbitrary
+encoding choice, not by the data.</li>
+<li><b>Why — collinearity.</b> A logistic coefficient is a <i>partial</i> effect (the feature's contribution given the
+others). Outbound is strongly collinear with <code>has_quote</code> (<b>r={corr_ob_quote:+.2f}</b>) and
+<code>n_inbound</code> (<b>r={corr_ob_inb:+.2f}</b>) — the features that carry the real signal — while its own marginal
+correlation with binding is only <b>{corr_ob_label:+.2f}</b>. When predictors are collinear the model splits the shared
+signal between them somewhat arbitrarily, so outbound's residual coefficient sits at the zero-crossing and a nonlinear
+transform tips it either way. The <i>direction</i> is simply not identified.</li>
+<li><b>Does it "earn its place"? The data can't say — the decision is noise-dominated.</b> See &sect;2.3: with
+~{n_pos} positive submissions and features correlated at 0.5+, every feature set sits within cross-validation noise
+of every other. We keep the full informative set because the <b>held-out test</b> — our one out-of-sample arbiter —
+mildly favors it, and including it costs nothing. (Dropping it moves held-out AUC by ~0.01.)</li>
+</ul>
+<span class="muted"><b>Bottom line:</b> outbound is redundant and its coefficient sign is uninterpretable, but the
+which-feature choice among these correlated predictors is below the noise floor — so we keep the full set and don't
+over-interpret. Full record: <code>decisions.md</code>; investigation: <code>notebooks/03_outbound_coefficient.ipynb</code>.</span></div>
+
+<h3>2.3 Did outbound "earn its place"? — exhaustive best-subset selection</h3>
+<p>With only 4 real predictors (<code>t</code> is the structural snapshot index, always in) there are just
+<b>2<sup>4</sup>−1 = 15</b> feature subsets — so we don't approximate with greedy forward selection, we run them
+<b>all</b> (the optimal version of what greedy approximates). Each is scored by grouped 5-fold CV precision@20,
+averaged over 5 seeds, on the training set only; the winner is confirmed once on the held-out test.</p>
+{bss_tbl}
+<div class="note"><b>Why CV can't choose: the measurement error is bigger than the spread.</b>
+<ul>
+<li><b>The spread is {cv_top_spread:.3f}; one CV run's own error is ±{cv_run_std:.3f}.</b> Re-running 5-fold CV
+{n_err_runs} times on the <i>same</i> fixed feature set — only the random fold split changes — precision@20 lands
+anywhere from <b>{cv_run_lo:.3f} to {cv_run_hi:.3f}</b> (std <b>±{cv_run_std:.3f}</b>). The entire gap between the best
+and worst of the top subsets is only <b>{cv_top_spread:.3f}</b>, well inside that wobble. So <b>which feature set
+"wins" is decided by the random fold split, not by the features</b> — exactly why a single-seed run once favored
+outbound and multi-seed averaging erased it. With only ~{n_pos} positive submissions, CV folding simply has no
+resolution at the 0.005 level.</li>
+<li><b>Single-feature reality.</b> outbound is the <b>weakest</b> candidate: lowest marginal correlation with binding
+(<b>{corr_ob_label:+.2f}</b>) and the <b>worst</b> single feature by CV precision@20 (<b>{bss_oba_p:.3f}</b>, vs the
+full set's {bss_full_p:.3f}). Greedy selection seeded from the strongest feature agrees — it stops at
+<code>{bss_best_feats}</code> and never adds outbound. (The earlier "outbound is the best single feature" claim was a
+single-seed artifact; multi-seed averaging dissolves it.)</li>
+<li><b>The arbiter.</b> Since CV can't decide, we defer to the one out-of-sample check. On the held-out test the
+<b>full</b> set edges the CV "winner" on both ROC-AUC (<b>{ho_full_auc:.3f}</b> vs {ho_win_auc:.3f}) and precision@20%
+(<b>{ho_full_p:.0%}</b> vs {ho_win_p:.0%} — a ≈{hits_full_minus_win}-submission gap in the top bucket). It mildly
+favors keeping the full set, and including it costs nothing — so we do.</li>
+</ul></div>
 
 <h2>3. Modeling (Task 3)</h2>
 
 <h3>3.1 Preprocessing &amp; validation</h3>
 <p><b>(a) Clean the data</b> — apply the 2 drops above in-pipeline (never mutate <code>data/</code>).
-<b>(b) Build features</b> per (submission, t), leakage-safe. Every feature is <b>standardized</b> (z-scored:
-mean 0, sd 1) inside the model pipeline <code>Impute(median) → StandardScaler → Logistic</code> — fit on the
-training fold only. Per-feature handling:</p>
-{table(["feature", "transform before scaling", "scaled?", "special handling"],
-[["<code>agent_bind_rate</code>", "empirical-Bayes <b>smoothing</b>", "yes", "smoothed toward the <b>TRAIN base rate</b>; cold-start → base rate (recomputed after the split → no leakage)"],
- ["<code>outbound_chars_log</code>", "<b>log1p</b>", "yes", "log first to tame the 43k-char outlier, then scale"],
- ["<code>has_quote_by_t</code>", "none (binary 0/1)", "yes", "scaled like the rest (harmless)"],
- ["<code>n_inbound_by_t</code>", "none", "yes", "—"],
- ["<code>t</code>", "none", "yes", "constant within a snapshot"]])}
-<p class="muted">Why standardize: L2 regularization penalizes coefficients equally regardless of units, and the
-optimizer converges faster on a well-scaled loss surface; it also makes the coefficients comparable for the §2.1 ranking.</p>
+<b>(b) Build features</b> per (submission, t), leakage-safe — per-feature build &amp; transforms are in the
+<b>§2 table</b>. Inside the pipeline <code>Impute(median) → StandardScaler → Logistic</code>, every feature is
+<b>standardized</b> (z-score, μ/σ from train only) → all 5 end mean 0, sd 1.</p>
+<p class="muted">Why standardize: L2 penalizes coefficients equally regardless of units, and the optimizer converges
+faster on a well-scaled loss surface; it also makes the coefficients comparable for the §2.1 ranking.</p>
 <div class="note"><b>(c) Validation strategy — three-way, no peeking:</b>
 <ul>
 <li><b>Temporal split:</b> train = earliest ~70% of submissions (by <code>createdDate</code>); held-out test = latest ~30% ({N} rows). Train-on-past / test-on-future is the honest setup for a repeat-customer signal.</li>
@@ -713,18 +999,27 @@ optimizer converges faster on a well-scaled loss surface; it also makes the coef
 <h3>3.2 How we measure</h3>
 <div class="note"><b>Precision@k is primary.</b> Brokers work a ranked queue top-down, so the operational question is
 <i>"of the top k% I'm told to work, what share actually bind?"</i> — exactly <b>precision@top-k</b> (k = 20/30/50%).
-<b>Lift</b> = precision@k ÷ base rate = how much better than working at random.
+<b>Lift</b> = precision@k ÷ the random level = how much better than working at random. <span class="muted">(A no-skill
+model can't rank, so its top-k% is just a random sample → its precision is the same at every k; that random level is
+what we divide by, so lift reads directly as "× over random.")</span>
 <br><b>Secondary:</b> <b>PR-AUC</b> (precision/recall — the right summary under imbalance) and <b>ROC-AUC</b> (familiar,
 but optimistic on imbalanced data because it rewards ranking the abundant non-binders — so we don't lead with it).
-<br><b>The two floors differ:</b> a random ranker has <b>ROC-AUC = 0.50</b> (the AUC floor); random <b>precision /
-PR-AUC = {base_rate:.0%}</b> (the prevalence). 0.50 is not a rate — that's why the baseline AUC floor is 0.50, not {base_rate:.0%}.</div>
+<br><b>The no-skill floors differ by metric:</b> a random ranker scores <b>ROC-AUC 0.50</b>; its <b>precision@k /
+PR-AUC</b> sit at the dataset prevalence (≈{base_rate:.0%}). 0.50 is a ranking floor, not a rate — that's why the AUC
+floor is 0.50, not {base_rate:.0%}.</div>
 
 <h3>3.3 Results vs baselines</h3>
 <p><b>Top-k (the headline):</b> working the model's <b>top 20%</b> finds binders
-<b>{overall_pl[0.20][1]:.1f}&times;</b> more efficiently than random ({overall_pl[0.20][0]:.0%} vs {base_rate:.0%});
-the advantage holds at 30% and 50%.</p>
-{img(FIG_PREC, "Fig 5 — (left) Precision@k with lift vs the random base rate. (right) Cumulative gains: x = fraction of the queue worked (top-down by score), y = fraction of ALL binders captured. Random captures binders in proportion to effort → the diagonal (work 20% → catch ~20%); the model's curve rises above it (top 20% → ~47% of binders).")}
+<b>{overall_pl[0.20][1]:.1f}&times;</b> more efficiently than random ({overall_pl[0.20][0]:.0%} of the top-20% bind,
+vs {base_rate:.0%} for a random pick); the advantage holds at 30% and 50%.</p>
+{img(FIG_PREC, "Fig 5 — (left) Precision@k with lift vs random. (right) Cumulative gains: x = fraction of the queue worked (top-down by score), y = fraction of ALL binders captured. A no-skill baseline can't rank (its order is uncorrelated with binding), so binders are spread evenly → you capture them in proportion to effort = the diagonal (work 20% → catch ~20%). The model's curve rises above it (top 20% → ~47% of binders). Note: the diagonal reflects random ordering, not how many binders exist.")}
 {prec_tbl}
+<p><b>Precision–recall across all thresholds.</b> Precision@k fixes one cutoff; the PR curve shows the whole
+precision-vs-recall trade-off, summarised by <b>PR-AUC = {average_precision_score(y, logi):.3f}</b> (vs the
+no-skill/random level {base_rate:.3f} — about {average_precision_score(y, logi)/base_rate:.1f}&times; better). It's the
+imbalance-aware ranking summary; the full model edges <code>agent_bind_rate</code> alone here (it adds precision once
+quotes/effort appear).</p>
+{img(FIG_PR, "Fig 5b — Precision–Recall curve on the held-out test. Higher and to the right is better. The model (PR-AUC " + f"{average_precision_score(y, logi):.3f}" + ") sits well above the random no-skill line (precision = prevalence at all recalls); high precision at low recall = the top of the queue is dense with binders, exactly what prioritization needs.")}
 <p><b>Do we have signal?</b> Yes — the model beats every baseline on both precision@20% and AUC:</p>
 {img(FIG_BASE, "Fig 4 — ROC-AUC on the held-out test vs baselines. The model clears the no-skill floor and beats single-feature, naive-heuristic and XGBoost baselines.")}
 {base_tbl}
@@ -732,10 +1027,12 @@ the advantage holds at 30% and 50%.</p>
 moment. (t=30 is noisy: n={int((test.t==30).sum())}.)</p>
 {img(FIG_PERT, "Fig 6 — (left) Per-t ROC-AUC, all above the no-skill floor. (right) The honest split: strong on returning customers at every t; for first-time (cold-start) customers it leans on in-submission activity, thin at t=0 and growing by t=7/30.")}
 <div class="note warn"><b>Cold-start clarity (what t=0 really gives you):</b> for a <b>first-time</b> customer at t=0,
-<code>agent_bind_rate</code> is a <b>constant</b> ({base_rate:.0%} base rate) → it can't rank them, and the other
-features are nearly empty (no quotes, ~6% have outbound; only ~44% have an early inbound). So the model scores them
-near <b>{base_rate:.0%}</b> and the day-0 strength is really about <i>returning</i> customers. The score "separates
-known-good repeat customers from the unknown {base_rate:.0%} pile."</div>
+<code>agent_bind_rate</code> is a <b>constant</b> ({base_rate:.0%} base rate) and the other features are nearly empty
+(no quotes, ~6% have outbound; only ~44% have an early inbound). So <b>all first-timers look alike → a similar
+middling score the model can't separate</b>; the day-0 strength is really about <i>returning</i> customers, where
+<code>agent_bind_rate</code> varies. <span class="muted">(The {base_rate:.0%} is the <code>agent_bind_rate</code>
+feature, not the output score — <code>class_weight=balanced</code> inflates the predicted probability, so bind_score
+is a <b>ranking</b> number, not a calibrated probability. See the worked t=0 examples in <code>comments.md</code>.)</span></div>
 
 <h3>3.4 Why not just the customer bind-rate?</h3>
 <p>A fair question, since <code>agent_bind_rate</code> alone nearly matches the full model <i>overall</i>. But that
@@ -773,8 +1070,6 @@ robust figures (~{roc_auc_score(y, logi):.2f} AUC, 2&ndash;3&times; lift), not t
 <p class="muted">Kept only if a feature survived <b>partial correlation</b> (signal beyond volume) <b>and</b> incremental
 held-out AUC. Full ledger: <code>reports/feature_catalog.md</code>.</p>
 {dropped_tbl}
-<div class="note"><b>Lesson:</b> judge features on the <b>held-out temporal test, not CV alone</b> — <code>is_cold_start_flag</code>
-won cross-validation (+0.029) but lost the temporal holdout (−0.044): it was overfitting the past.</div>
 
 <footer>
 <b>How to run:</b> <code>poetry install</code> &middot; <code>poetry run python src/evaluate.py</code> (reproduces these numbers)
