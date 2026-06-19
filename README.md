@@ -32,7 +32,7 @@ challenge_1/
 │   ├── features.py           # feature(submission_id, t) + build_panel()            [Task 1]
 │   ├── model.py              # train_bind_model() + bind_score(submission_id, t)    [Task 3]
 │   └── evaluate.py           # metrics, baselines, XGBoost comparison
-├── scripts/                  # exploratory checks + the report builder
+├── scripts/                  # research / exploratory analyses + the report builder
 ├── reports/
 │   └── final_report.html     # the deliverable (self-contained)
 ├── data/                     # NOT shipped — drop the provided CSVs here (see "Run it")
@@ -40,6 +40,9 @@ challenge_1/
 ```
 > The raw `data/` CSVs, EDA notebooks, and figure sources are part of the full project but are **not** in this
 > repo (it's the code + the rendered report). Everything below runs once you supply the two data files.
+>
+> **`scripts/` is research, not the production path** — exploratory checks, feature searches, and one-off analyses
+> that justify the choices in `src/` (the report builder also lives there). The shippable model is `src/`.
 
 ## Run it
 ```bash
