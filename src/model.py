@@ -74,7 +74,6 @@ def cv_auc(train: pd.DataFrame, feats: list[str]) -> float:
 def select_features(train: pd.DataFrame) -> dict:
     """CV-within-train comparison: does agent_bind_rate help? does log1p(outbound_chars) help?"""
     train = train.copy()
-    train["outbound_chars_log"] = np.log1p(train.outbound_chars_by_t)
     local = ["outbound_chars_by_t", "has_quote_by_t", "n_inbound_by_t", "t"]
     full = ["agent_bind_rate"] + local
     full_log = [

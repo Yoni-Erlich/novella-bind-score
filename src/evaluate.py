@@ -54,6 +54,25 @@ def overall(test, scores):
     }
 
 
+def train_vs_test_metrics(fit):
+    """Overfitting check: in-sample (train) vs held-out (test) ranking metrics.
+    `fit` = dict from train_bind_model. A NEGATIVE train-minus-test gap means the held-out
+    test scores >= train — the OPPOSITE of overfitting (overfitting shows train >> test)."""
+    m, train, test = fit["model"], fit["train"], fit["test"]
+
+    def _m(df):
+        s = m.predict_proba(df[MODEL_FEATURES])[:, 1]
+        yy = df.label.values
+        return {
+            "roc_auc": roc_auc_score(yy, s),
+            "pr_auc": average_precision_score(yy, s),
+            "p20": precision_at_k(yy, s, K_FRAC),
+        }
+
+    tr, te = _m(train), _m(test)
+    return {"train": tr, "test": te, "gap": {k: tr[k] - te[k] for k in tr}}
+
+
 def get_test_scores():
     """Train the model + baselines and return (fit, test, scores_dict) — no printing.
     `scores` maps model name -> per-test-row score array. Used by the notebook to plot comparisons."""
@@ -129,6 +148,19 @@ def run():
         "univariate_test_AUC", ascending=False
     )
     print(rank.round(3).to_string())
+
+    print("\n=== Overfitting check: in-sample (train) vs held-out (test) ===")
+    ovf = train_vs_test_metrics(fit)
+    for k, lab in [
+        ("roc_auc", "ROC-AUC"),
+        ("pr_auc", "PR-AUC"),
+        ("p20", "precision@20"),
+    ]:
+        print(
+            f"  {lab:13s} train {ovf['train'][k]:.3f}  test {ovf['test'][k]:.3f}  "
+            f"gap {ovf['gap'][k]:+.3f}"
+        )
+    print("  negative gap => test >= train => no overfitting")
     return fit, scores
 
 

@@ -32,7 +32,7 @@ sys.path.insert(0, str(R))
 from src.preprocessing import validate, clean
 from src.features import build_panel, MODEL_FEATURES
 from src.model import standardized_coefficients, make_model
-from src.evaluate import get_test_scores, precision_at_k
+from src.evaluate import get_test_scores, precision_at_k, train_vs_test_metrics
 
 # ---------- palette ----------
 PURPLE, PURPLE2, GOLD, GREY, GOOD = (
@@ -222,6 +222,9 @@ FIG_SIGNAL = b64(fig)
 # ================= MODEL + METRICS =================
 fit, test, scores = get_test_scores()
 y = test.label.values
+test_prev = float(
+    y.mean()
+)  # held-out TEST prevalence = no-skill floor for P@k / PR-AUC
 logi = scores["logistic (final)"]
 
 
@@ -440,7 +443,7 @@ ks = [0.20, 0.30, 0.50]
 x = np.arange(len(ks))
 w = 0.36
 model_p = [overall_pl[k][0] for k in ks]
-rand_p = [base_rate] * len(ks)
+rand_p = [test_prev] * len(ks)
 b1 = a1.bar(x - w / 2, model_p, w, color=GOLD, label="model (work top-k%)")
 b2 = a1.bar(
     x + w / 2,
@@ -496,7 +499,7 @@ ax.plot(
     label=f"agent_bind_rate only — PR-AUC {ap_agent:.3f}",
 )
 ax.axhline(
-    base_rate, color=GREY, ls="--", lw=1.4, label=f"random (no-skill) — {base_rate:.3f}"
+    test_prev, color=GREY, ls="--", lw=1.4, label=f"random (no-skill) — {test_prev:.3f}"
 )
 ax.set_xlabel("recall (share of binders found)")
 ax.set_ylabel("precision (share of worked that bind)")
@@ -579,7 +582,7 @@ def table(headers, rows, hl=None):
 pl = lambda d, k: f"{d[k][0]:.0%} ({d[k][1]:.1f}×)"
 N = len(test)
 pk20 = (
-    lambda s: f"{precision_at_k(y, s, 0.20):.0%} ({precision_at_k(y, s, 0.20)/base_rate:.1f}×)"
+    lambda s: f"{precision_at_k(y, s, 0.20):.0%} ({precision_at_k(y, s, 0.20)/test_prev:.1f}×)"
 )
 
 # baseline comparison — precision@20% FIRST, then AUC/PR-AUC
@@ -596,9 +599,9 @@ base_tbl = table(
     [
         [
             nm,
-            f"{base_rate:.0%} (1.0×)" if nm == "no-skill floor" else pk20(s),
+            f"{test_prev:.0%} (1.0×)" if nm == "no-skill floor" else pk20(s),
             "0.500" if nm == "no-skill floor" else f"{roc_auc_score(y, s):.3f}",
-            f"{base_rate:.3f}"
+            f"{test_prev:.3f}"
             if nm == "no-skill floor"
             else f"{average_precision_score(y, s):.3f}",
         ]
@@ -630,6 +633,25 @@ bss_tbl = table(
     ["feature set (+t)", "has outbound", "CV p@20", "CV AUC"],
     _bss_rows,
     hl=bss_full["feats"] + "+t",
+)
+
+# Appendix B — overfitting check: in-sample (train) vs held-out (test)
+ovf = train_vs_test_metrics(fit)
+ovf_tbl = table(
+    ["metric", "train (in-sample)", "held-out test", "gap (train − test)"],
+    [
+        [
+            lab,
+            f"{ovf['train'][k]:.3f}",
+            f"{ovf['test'][k]:.3f}",
+            f"{ovf['gap'][k]:+.3f}",
+        ]
+        for k, lab in [
+            ("roc_auc", "ROC-AUC"),
+            ("pr_auc", "PR-AUC"),
+            ("p20", "precision@20%"),
+        ]
+    ],
 )
 
 # "why not agent_bind_rate alone" — segment the test by customer history
@@ -1011,12 +1033,12 @@ floor is 0.50, not {base_rate:.0%}.</div>
 <h3>3.3 Results vs baselines</h3>
 <p><b>Top-k (the headline):</b> working the model's <b>top 20%</b> finds binders
 <b>{overall_pl[0.20][1]:.1f}&times;</b> more efficiently than random ({overall_pl[0.20][0]:.0%} of the top-20% bind,
-vs {base_rate:.0%} for a random pick); the advantage holds at 30% and 50%.</p>
+vs {test_prev:.0%} for a random pick); the advantage holds at 30% and 50%.</p>
 {img(FIG_PREC, "Fig 5 — (left) Precision@k with lift vs random. (right) Cumulative gains: x = fraction of the queue worked (top-down by score), y = fraction of ALL binders captured. A no-skill baseline can't rank (its order is uncorrelated with binding), so binders are spread evenly → you capture them in proportion to effort = the diagonal (work 20% → catch ~20%). The model's curve rises above it (top 20% → ~47% of binders). Note: the diagonal reflects random ordering, not how many binders exist.")}
 {prec_tbl}
 <p><b>Precision–recall across all thresholds.</b> Precision@k fixes one cutoff; the PR curve shows the whole
 precision-vs-recall trade-off, summarised by <b>PR-AUC = {average_precision_score(y, logi):.3f}</b> (vs the
-no-skill/random level {base_rate:.3f} — about {average_precision_score(y, logi)/base_rate:.1f}&times; better). It's the
+no-skill/random level {test_prev:.3f} — about {average_precision_score(y, logi)/test_prev:.1f}&times; better). It's the
 imbalance-aware ranking summary; the full model edges <code>agent_bind_rate</code> alone here (it adds precision once
 quotes/effort appear).</p>
 {img(FIG_PR, "Fig 5b — Precision–Recall curve on the held-out test. Higher and to the right is better. The model (PR-AUC " + f"{average_precision_score(y, logi):.3f}" + ") sits well above the random no-skill line (precision = prevalence at all recalls); high precision at low recall = the top of the queue is dense with binders, exactly what prioritization needs.")}
@@ -1070,6 +1092,19 @@ robust figures (~{roc_auc_score(y, logi):.2f} AUC, 2&ndash;3&times; lift), not t
 <p class="muted">Kept only if a feature survived <b>partial correlation</b> (signal beyond volume) <b>and</b> incremental
 held-out AUC. Full ledger: <code>reports/feature_catalog.md</code>.</p>
 {dropped_tbl}
+
+<h2>Appendix B — Overfitting check: in-sample (train) vs held-out (test)</h2>
+<p class="muted">Score the fitted model on its own training rows (in-sample) and on the held-out test, and compare.</p>
+{ovf_tbl}
+<div class="note"><b>No sign of overfitting — in fact the opposite.</b> Overfitting shows <b>train &Gt; test</b>; here the
+gap is <b>negative</b> (test beats train on every metric). Two reasons: (1) a strongly L2-regularized 5-feature linear
+model is low-variance — in-sample AUC ({ovf['train']['roc_auc']:.2f}) barely exceeds its CV AUC, so it isn't memorizing
+the train set; (2) the dominant feature <code>agent_bind_rate</code> <b>accumulates over time</b>, so the earliest-70%
+<i>train</i> window is mostly first-time agents (cold-start → feature ≈ constant, little to grip) while the later-30%
+<i>test</i> window is history-rich, where the model is genuinely more skillful.
+<br><span class="muted">Caveat: the negative gap isn't free generalization — the test window is also an easier,
+more history-rich slice; with ~{n_pos} positives and a single split, read the values as noisy. The robust takeaway is
+qualitative: <b>not overfit</b>.</span></div>
 
 <footer>
 <b>How to run:</b> <code>poetry install</code> &middot; <code>poetry run python src/evaluate.py</code> (reproduces these numbers)
