@@ -114,27 +114,26 @@ a1.text(
     fontweight="bold",
     color="#1f7a6e",
 )
-a1.annotate(
-    f"−{dup_n}\nduplicates",
-    xy=(1.3, after_dup + dup_n / 2),
-    xytext=(1.62, 17080),
-    ha="left",
-    va="center",
+# drop counts sit just above each red drop bar (the x-axis labels already say WHAT each drop is)
+a1.text(
+    1.0,
+    raw_n + 35,
+    f"−{dup_n}",
+    ha="center",
+    va="bottom",
     color=RED,
-    fontsize=8.5,
+    fontsize=9,
     fontweight="bold",
-    arrowprops=dict(arrowstyle="-", color=RED, lw=0.8),
 )
-a1.annotate(
-    f"−{imp_n}\npre-creation",
-    xy=(2.3, clean_n + imp_n / 2),
-    xytext=(2.5, 16760),
-    ha="left",
-    va="center",
+a1.text(
+    2.0,
+    after_dup + 35,
+    f"−{imp_n}",
+    ha="center",
+    va="bottom",
     color=RED,
-    fontsize=8.5,
+    fontsize=9,
     fontweight="bold",
-    arrowprops=dict(arrowstyle="-", color=RED, lw=0.8),
 )
 a1.set_xticks([0, 1, 2, 3])
 a1.set_xticklabels(["raw", "dedup", "drop\nimpossible", "clean"], fontsize=8.5)
