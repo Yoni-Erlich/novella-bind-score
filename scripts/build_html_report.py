@@ -437,20 +437,14 @@ ax.tick_params(axis="x", labelrotation=18)
 FIG_BASE = b64(fig)
 
 # ---------- Fig 5: precision@k (headline) ----------
-fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 3.6), constrained_layout=True)
+fig, a1 = plt.subplots(figsize=(6.6, 3.7))
 ks = [0.20, 0.30, 0.50]
 x = np.arange(len(ks))
 w = 0.36
 model_p = [overall_pl[k][0] for k in ks]
 rand_p = [test_prev] * len(ks)
 b1 = a1.bar(x - w / 2, model_p, w, color=GOLD, label="model (work top-k%)")
-b2 = a1.bar(
-    x + w / 2,
-    rand_p,
-    w,
-    color=GREY,
-    label="random (no-skill)",
-)
+b2 = a1.bar(x + w / 2, rand_p, w, color=GREY, label="random (no-skill)")
 for b, k in zip(b1, ks):
     a1.text(
         b.get_x() + b.get_width() / 2,
@@ -460,24 +454,11 @@ for b, k in zip(b1, ks):
         fontsize=8.5,
     )
 a1.set_xticks(x)
-a1.set_xticklabels([f"top {int(k*100)}%" for k in ks])
+a1.set_xticklabels([f"top {int(k * 100)}%" for k in ks])
 a1.set_title("Precision@k (overall)", fontweight="bold")
 a1.set_ylabel("precision (sell-rate in worked set)")
 a1.legend(fontsize=8)
 a1.set_ylim(0, max(model_p) * 1.3)
-# cumulative gains curve
-ordr = np.argsort(-logi, kind="stable")
-ycum = np.cumsum(y[ordr]) / y.sum()
-frac = np.arange(1, len(y) + 1) / len(y)
-a2.plot(frac, ycum, color=PURPLE, lw=2, label="model")
-a2.plot([0, 1], [0, 1], color=GREY, ls="--", lw=1.2, label="random")
-for k in ks:
-    idx = int(np.ceil(k * len(y))) - 1
-    a2.scatter([frac[idx]], [ycum[idx]], color=GOLD, zorder=5)
-a2.set_title("Cumulative gains", fontweight="bold")
-a2.set_xlabel("fraction of queue worked")
-a2.set_ylabel("fraction of binders captured")
-a2.legend(fontsize=8, loc="lower right")
 FIG_PREC = b64(fig)
 
 # ---------- Fig: precision-recall curve ----------
@@ -881,7 +862,7 @@ value keeps growing toward t=30.</p>
 <p>881 submissions (one per <code>submissionId</code>), <b>{base_rate:.1%} bind rate</b> &rarr; imbalanced, so we use
 <b>ranking</b> metrics, not accuracy. ~17k events of 3 types (EMAIL_INBOUND / OUTBOUND / QUOTE_RECEIVED).
 A row is one <b>(submission, t)</b> pair, scored only while the submission is still <b>open at t</b>.</p>
-{img(FIG_CLEAN, "Fig 1 — Cleaning: drop 530 exact-duplicate + 127 impossible pre-creation events (17,211 → 16,564). Right: most events cluster after createdDate; a pre-creation tail violates causality and is dropped (d &lt; −1 day); −15-min clock-skew is kept.")}
+{img(FIG_CLEAN, "Fig 1 — [full dataset · pre-split] Cleaning: drop 530 exact-duplicate + 127 impossible pre-creation events (17,211 → 16,564). Right: most events cluster after createdDate; a pre-creation tail violates causality and is dropped (d &lt; −1 day); −15-min clock-skew is kept.")}
 <div class="note"><b>Cleaning policy (2 drops, leakage-safe):</b>
 <ul>
 <li><b>530 exact-duplicate events</b> (same sub + second + type + chars + attach) — concentrated in high-activity subs, so they <i>inflate the volume features</i> that carry our signal.</li>
@@ -899,7 +880,7 @@ A row is one <b>(submission, t)</b> pair, scored only while the submission is st
 <p>The signal is simple: <b>activity volume + quote presence + customer track record</b>. Normalized ratios,
 attachments, char-distribution stats, response-latency, velocity and calendar all add nothing beyond raw volume
 (see Appendix A).</p>
-{img(FIG_SIGNAL, "Fig 2 — What predicts binding: (left) a received quote sharply raises bind rate, more so as t grows; (mid) submissions split into outbound-volume QUARTILES — Q1 = lowest-25% broker writing … Q4 = highest-25% — bind rate rises monotonically (more broker effort/volume → higher bind rate); (right) repeat customers with a strong prior track record bind far above the base rate, first-timers sit near it.")}
+{img(FIG_SIGNAL, "Fig 2 — [full dataset · EDA] What predicts binding: (left) a received quote sharply raises bind rate, more so as t grows; (mid) submissions split into outbound-volume QUARTILES — Q1 = lowest-25% broker writing … Q4 = highest-25% — bind rate rises monotonically (more broker effort/volume → higher bind rate); (right) repeat customers with a strong prior track record bind far above the base rate, first-timers sit near it.")}
 <p>The 4 predictive features + <code>t</code> (a context variable that lets one pooled model adapt across snapshots).
 This table is the one-stop summary of <b>what we did with each feature</b> — what it captures, how it's built
 (leakage-safe), and its preprocessing:</p>
@@ -940,7 +921,7 @@ new agent <b>0/0</b> → <b>{base_rate:.0%}</b> &nbsp;·&nbsp; one win <b>1/1</b
 <p>We rank by the <b>magnitude</b> of the standardized coefficient (significance, given the other features), and also
 report its <b>sign</b> (direction). Ranked via the linear lens, not SHAP (SHAP on the overfit tree was a
 high-cardinality artifact — Appendix A).</p>
-{img(FIG_RANK, "Fig 3 — Signed standardized logistic coefficients. Bar length = significance (how much the model relies on the feature given the others); bar direction = whether it raises (right) or lowers (left) the bind odds. agent_bind_rate and has_quote are the two big positive drivers; outbound_chars is negative (see note).")}
+{img(FIG_RANK, "Fig 3 — [model fit on train] Signed standardized logistic coefficients. Bar length = significance (how much the model relies on the feature given the others); bar direction = whether it raises (right) or lowers (left) the bind odds. agent_bind_rate and has_quote are the two big positive drivers; outbound_chars is negative (see note).")}
 {rank_tbl}
 <p class="muted">Significance order (|coef|): customer track record &Gt; got-a-quote &gt; broker-effort &asymp; customer replies &gt; t.
 Four of the five signs are intuitive; <code>outbound_chars</code> is negative — explained in &sect;2.2.</p>
@@ -1030,23 +1011,24 @@ PR-AUC</b> sit at the dataset prevalence (≈{base_rate:.0%}). 0.50 is a ranking
 floor is 0.50, not {base_rate:.0%}.</div>
 
 <h3>3.3 Results vs baselines</h3>
+<p><b>Do we have signal?</b> Yes — the model beats every baseline on both precision@20% and AUC:</p>
+{img(FIG_BASE, "Fig 4 — [held-out test] ROC-AUC vs baselines. The model clears the no-skill floor and beats single-feature, naive-heuristic and XGBoost baselines.")}
+{base_tbl}
 <p><b>Top-k (the headline):</b> working the model's <b>top 20%</b> finds binders
 <b>{overall_pl[0.20][1]:.1f}&times;</b> more efficiently than random ({overall_pl[0.20][0]:.0%} of the top-20% bind,
-vs {test_prev:.0%} for a random pick); the advantage holds at 30% and 50%.</p>
-{img(FIG_PREC, "Fig 5 — (left) Precision@k with lift vs random. (right) Cumulative gains: x = fraction of the queue worked (top-down by score), y = fraction of ALL binders captured. A no-skill baseline can't rank (its order is uncorrelated with binding), so binders are spread evenly → you capture them in proportion to effort = the diagonal (work 20% → catch ~20%). The model's curve rises above it (top 20% → ~47% of binders). Note: the diagonal reflects random ordering, not how many binders exist.")}
+vs {test_prev:.0%} for a random pick) — and that top 20% captures <b>nearly half of all binders</b>; the advantage
+holds at 30% and 50%.</p>
+{img(FIG_PREC, "Fig 5 — [held-out test] Precision@k: of the top k% of the ranked queue, the share that actually bind (gold) vs a random pick (grey, = test prevalence); the ×N above each bar is the lift over random.")}
 {prec_tbl}
 <p><b>Precision–recall across all thresholds.</b> Precision@k fixes one cutoff; the PR curve shows the whole
 precision-vs-recall trade-off, summarised by <b>PR-AUC = {average_precision_score(y, logi):.3f}</b> (vs the
 no-skill/random level {test_prev:.3f} — about {average_precision_score(y, logi)/test_prev:.1f}&times; better). It's the
 imbalance-aware ranking summary; the full model edges <code>agent_bind_rate</code> alone here (it adds precision once
 quotes/effort appear).</p>
-{img(FIG_PR, "Fig 5b — Precision–Recall curve on the held-out test. Higher and to the right is better. The model (PR-AUC " + f"{average_precision_score(y, logi):.3f}" + ") sits well above the random no-skill line (precision = prevalence at all recalls); high precision at low recall = the top of the queue is dense with binders, exactly what prioritization needs.")}
-<p><b>Do we have signal?</b> Yes — the model beats every baseline on both precision@20% and AUC:</p>
-{img(FIG_BASE, "Fig 4 — ROC-AUC on the held-out test vs baselines. The model clears the no-skill floor and beats single-feature, naive-heuristic and XGBoost baselines.")}
-{base_tbl}
+{img(FIG_PR, "Fig 5b — [held-out test] Precision–Recall curve. Higher and to the right is better. The model (PR-AUC " + f"{average_precision_score(y, logi):.3f}" + ") sits well above the random no-skill line (precision = prevalence at all recalls); high precision at low recall = the top of the queue is dense with binders, exactly what prioritization needs.")}
 <p><b>Per-t:</b> the model works at every snapshot, including <b>day 0</b> — the most valuable, previously-blind
 moment. (t=30 is noisy: n={int((test.t==30).sum())}.)</p>
-{img(FIG_PERT, "Fig 6 — (left) Per-t ROC-AUC, all above the no-skill floor. (right) The honest split: strong on returning customers at every t; for first-time (cold-start) customers it leans on in-submission activity, thin at t=0 and growing by t=7/30.")}
+{img(FIG_PERT, "Fig 6 — [held-out test] (left) Per-t ROC-AUC, all above the no-skill floor. (right) The honest split: strong on returning customers at every t; for first-time (cold-start) customers it leans on in-submission activity, thin at t=0 and growing by t=7/30.")}
 <div class="note warn"><b>Cold-start clarity (what t=0 really gives you):</b> for a <b>first-time</b> customer at t=0,
 <code>agent_bind_rate</code> is a <b>constant</b> ({base_rate:.0%} base rate) and the other features are nearly empty
 (no quotes, ~6% have outbound; only ~44% have an early inbound). So <b>all first-timers look alike → a similar
