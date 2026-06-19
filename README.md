@@ -4,6 +4,14 @@ A **bind score** for an E&S insurance broker: given `(submission_id, t)` — a s
 after it was created — output a score so that **higher = more likely to bind (sell)**. Brokers use it to
 **prioritize effort** (work the top of the ranked list first); earlier predictions are more valuable.
 
+> ## 📄 Deliverable → **[`reports/final_report.html`](reports/final_report.html)** — start here
+> This self-contained HTML report is the **primary output to review**: the full write-up — data story, the three
+> tasks (features · significance · model+evaluation), results vs baselines, the overfit check, and honest
+> limitations. Everything in `src/` exists to produce it. It's committed and embeds all its charts, so just open it
+> in a browser. **▶ View it live, rendered: https://yoni-erlich.github.io/novella-bind-score/reports/final_report.html**
+> — or download the file and open it locally (it won't render inline on the GitHub *file* view). The rest of this README
+> is how to run and regenerate it.
+
 **Headline result (held-out temporal test):** ROC-AUC **0.744**, **2–3× lift** at the top-20% of the list,
 and — crucially — **day-0 predictions work** (AUC 0.76, up from a coin-flip) thanks to repeat-customer history.
 
@@ -23,12 +31,12 @@ anything in `src/`, rerun the two commands, and both the printed numbers and the
 
 ---
 
-## Report (start here)
+## The report — how to open it
 The **self-contained** HTML report `reports/final_report.html` is committed under `reports/` — every chart is
 embedded, so it needs no data and no server. It doesn't render inline on GitHub; to read it:
 
-> open the file on GitHub → **Download raw file** → open the downloaded `.html` in any browser.
-> (Or just clone the repo — which you'd do to run the code anyway — and open the file locally.)
+> **Easiest — view it live, rendered:** https://yoni-erlich.github.io/novella-bind-score/reports/final_report.html
+> Or on the GitHub *file* view → **Download raw file** → open the `.html` locally. (Or clone the repo and open it.)
 
 [`reports/final_report.html`](reports/final_report.html) — the **deliverable**: data story, the 3 tasks,
 results, limitations.
@@ -163,7 +171,9 @@ feature *selection* happens in train CV.)
 Also tested: **one pooled model vs three per-`t` models** → 0.744 vs 0.738 (pooled wins, esp. at day-0); class-weight
 tuning → no effect on ranking.
 
-> Full detail, charts, and the cautionary SHAP tale live in the HTML report above.
+> **Full design rationale and deeper analysis are in the [HTML report](reports/final_report.html)** — why logistic
+> over XGBoost, why precision@k is the primary metric, the temporal-split reasoning, the feature-selection
+> noise analysis (why we keep all four features), the train-vs-test overfitting check, and the cautionary SHAP tale.
 
 ---
 
