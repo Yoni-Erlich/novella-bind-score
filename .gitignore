@@ -12,12 +12,10 @@ __pycache__/
 # tooling
 .ruff_cache/
 
-# data / heavy inputs — not part of the deliverable (reviewers drop the provided CSVs into data/)
-data/
-notebooks/
+# heavy / internal — not part of the deliverable
+# (data/ + notebooks/ ARE shipped so the repo runs out of the box)
 handoffs/
 reports/figures/
-*.csv
 *.pdf
 
 # internal scratch / planning
