@@ -1,0 +1,22 @@
+# env
+.venv/
+__pycache__/
+*.pyc
+
+# jupyter
+.ipynb_checkpoints/
+
+# os
+.DS_Store
+
+# tooling
+.ruff_cache/
+
+# data / outputs — personal repo holds code only
+data/
+reports/
+notebooks/
+handoffs/
+*.csv
+*.pdf
+*.html
