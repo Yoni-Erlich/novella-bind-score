@@ -820,14 +820,14 @@ html = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <h1>Novella Bind Score &mdash; Final Report</h1>
 <div class="sub">Ranking open E&amp;S submissions by likelihood to <b>bind (sell)</b>, for broker effort-prioritization.
 &nbsp;<code>bind_score(submission_id, t)</code>, t&nbsp;&isin;&nbsp;{{0,&nbsp;7,&nbsp;30}}.</div>
-<div class="pill">Held-out temporal test &middot; ROC-AUC {roc_auc_score(y, logi):.3f} &middot; 2&ndash;3&times; lift @ top-20%</div>
+<div class="pill">Held-out temporal test &middot; ROC-AUC {roc_auc_score(y, logi):.3f} &middot; {overall_pl[0.20][1]:.1f}&times; lift @ top-20%</div>
 </div></header>
 <div class="wrap">
 
 <div class="tldr">
 <h2>TL;DR</h2>
 <p><b>Result.</b> Working the model's <b>top 20%</b> of the queue binds at <b>{overall_pl[0.20][0]:.0%}</b> &mdash; a
-<b>{overall_pl[0.20][1]:.1f}&times; lift over random</b> &mdash; holding at 30%/50%; overall ranking ROC-AUC
+<b>{overall_pl[0.20][1]:.1f}&times; lift over random</b> (tapering but staying above random at 30%/50%); overall ranking ROC-AUC
 <b>{roc_auc_score(y, logi):.3f}</b>, PR-AUC <b>{average_precision_score(y, logi):.3f}</b>. Precision@k is our primary
 metric (brokers work a ranked queue).</p>
 <p><b>Features (4 + <code>t</code>).</b> <code>agent_bind_rate</code> (repeat-<i>customer</i> close-rate),
@@ -859,8 +859,8 @@ value keeps growing toward t=30.</p>
 </div>
 
 <h2>1. Data, cleaning &amp; what to watch for</h2>
-<p>881 submissions (one per <code>submissionId</code>), <b>{base_rate:.1%} bind rate</b> &rarr; imbalanced, so we use
-<b>ranking</b> metrics, not accuracy. ~17k events of 3 types (EMAIL_INBOUND / OUTBOUND / QUOTE_RECEIVED).
+<p>881 submissions (one per <code>submissionId</code>), <b>{base_rate:.1%} full-dataset bind rate</b> (the held-out
+test runs at {test_prev:.0%}) &rarr; imbalanced, so we use <b>ranking</b> metrics, not accuracy. ~17k events of 3 types (EMAIL_INBOUND / OUTBOUND / QUOTE_RECEIVED).
 A row is one <b>(submission, t)</b> pair, scored only while the submission is still <b>open at t</b>.</p>
 {img(FIG_CLEAN, "Fig 1 — [full dataset · pre-split] Cleaning: drop 530 exact-duplicate + 127 impossible pre-creation events (17,211 → 16,564). Right: most events cluster after createdDate; a pre-creation tail violates causality and is dropped (d &lt; −1 day); −15-min clock-skew is kept.")}
 <div class="note"><b>Cleaning policy (2 drops, leakage-safe):</b>
@@ -991,12 +991,13 @@ favors keeping the full set, and including it costs nothing — so we do.</li>
 <b>standardized</b> (z-score, μ/σ from train only) → all 5 end mean 0, sd 1.</p>
 <p class="muted">Why standardize: L2 penalizes coefficients equally regardless of units, and the optimizer converges
 faster on a well-scaled loss surface; it also makes the coefficients comparable for the §2.1 ranking.</p>
-<div class="note"><b>(c) Validation strategy — three-way, no peeking:</b>
+<div class="note"><b>(c) Validation strategy:</b>
 <ul>
 <li><b>Temporal split:</b> train = earliest ~70% of submissions (by <code>createdDate</code>); held-out test = latest ~30% ({N} rows). Train-on-past / test-on-future is the honest setup for a repeat-customer signal.</li>
-<li><b>Validation = grouped CV <i>inside</i> the training set:</b> every choice (feature set, the <code>log1p</code> transform, regularization) is picked by <b>5-fold <code>StratifiedGroupKFold</code></b>, <b>grouped by <code>submissionId</code></b> so a submission's t=0/7/30 rows never straddle a fold — no within-submission leakage. We do <b>not</b> carve a static validation set: with only 130 positives, CV reuses the data more efficiently.</li>
-<li><b>The held-out test is touched once</b> — for the final numbers below; it never informs a modeling decision.</li>
-</ul></div>
+<li><b>Selection on grouped CV <i>inside</i> train:</b> the feature set (does <code>agent_bind_rate</code> help?) and the <code>log1p</code> transform are picked by <b>5-fold <code>StratifiedGroupKFold</code></b>, <b>grouped by <code>submissionId</code></b> so a submission's t=0/7/30 rows never straddle a fold — no within-submission leakage. With only ~130 positives we use CV rather than a static validation set. <span class="muted">(Regularization is left at the default <code>C=1.0</code> — <b>not tuned</b>.)</span></li>
+<li><b>Held-out test:</b> produces the final numbers, and — only where CV genuinely <i>couldn't</i> separate options — serves as the tiebreaker: the marginal keep-all-four feature call (&sect;2.3, noise-dominated) and the required model-choice comparisons (XGBoost; pooled vs per-t, &sect;3.5). We do <b>not</b> tune hyperparameters to it or iterate against it; core feature selection stays CV-on-train — so the test informs only a few late, low-impact, disclosed calls.</li>
+</ul>
+<span class="muted"><b>Given more time:</b> tune hyperparameters (logistic <code>C</code>/penalty and the smoothing α) via <b>nested</b> CV so the test stays fully untouched, and replace the single split with rolling-window temporal backtests.</span></div>
 
 <h3>3.2 How we measure</h3>
 <div class="note"><b>Precision@k is primary.</b> Brokers work a ranked queue top-down, so the operational question is
@@ -1016,8 +1017,8 @@ floor is 0.50, not {base_rate:.0%}.</div>
 {base_tbl}
 <p><b>Top-k (the headline):</b> working the model's <b>top 20%</b> finds binders
 <b>{overall_pl[0.20][1]:.1f}&times;</b> more efficiently than random ({overall_pl[0.20][0]:.0%} of the top-20% bind,
-vs {test_prev:.0%} for a random pick) — and that top 20% captures <b>nearly half of all binders</b>; the advantage
-holds at 30% and 50%.</p>
+vs {test_prev:.0%} for a random pick) — and that top 20% captures <b>nearly half of all binders</b>. Lift tapers as
+you work deeper ({overall_pl[0.30][1]:.1f}&times; at 30%, {overall_pl[0.50][1]:.1f}&times; at 50%) but stays above random throughout.</p>
 {img(FIG_PREC, "Fig 5 — [held-out test] Precision@k: of the top k% of the ranked queue, the share that actually bind (gold) vs a random pick (grey, = test prevalence); the ×N above each bar is the lift over random.")}
 {prec_tbl}
 <p><b>Precision–recall across all thresholds.</b> Precision@k fixes one cutoff; the PR curve shows the whole
@@ -1050,8 +1051,8 @@ single feature looks "good enough" on the average.</p>
 <b>underperformed logistic at every t</b> (overall {roc_auc_score(y, scores['xgboost']):.3f} vs {roc_auc_score(y, logi):.3f};
 see Fig 4 / the table above). No nonlinear or interaction signal to exploit, and on 130 positives the simpler linear
 model generalizes better and stays interpretable. We also compared <b>one pooled model</b> (with <code>t</code> as a
-feature) vs <b>three per-t models</b>: pooled tied-or-won and crucially won day-0 (it borrows strength across
-snapshots instead of training t=0 on cold-start-heavy rows). → <b>ship one pooled logistic regression.</b></p>
+feature) vs <b>three per-t models</b>: pooled won overall (AUC 0.744 vs 0.738) and crucially at day-0 (0.759 vs 0.707) —
+it borrows strength across snapshots instead of training t=0 on cold-start-heavy rows. → <b>ship one pooled logistic regression.</b></p>
 
 <h2>4. Conclusion — capability &amp; features</h2>
 <div class="kpis">
@@ -1079,7 +1080,7 @@ held-out AUC. Full ledger: <code>reports/feature_catalog.md</code>.</p>
 {ovf_tbl}
 <div class="note"><b>No sign of overfitting — in fact the opposite.</b> Overfitting shows <b>train &Gt; test</b>; here the
 gap is <b>negative</b> (test beats train on every metric). Two reasons: (1) a strongly L2-regularized 5-feature linear
-model is low-variance — in-sample AUC ({ovf['train']['roc_auc']:.2f}) barely exceeds its CV AUC, so it isn't memorizing
+model is low-variance — in-sample AUC ({ovf['train']['roc_auc']:.2f}) is low in absolute terms, so it isn't memorizing
 the train set; (2) the dominant feature <code>agent_bind_rate</code> <b>accumulates over time</b>, so the earliest-70%
 <i>train</i> window is mostly first-time agents (cold-start → feature ≈ constant, little to grip) while the later-30%
 <i>test</i> window is history-rich, where the model is genuinely more skillful.
