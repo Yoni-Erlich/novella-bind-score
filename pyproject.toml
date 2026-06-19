@@ -2,7 +2,7 @@
 name = "novella-bind-score"
 version = "0.1.0"
 description = "Novella bind-score challenge — effort-prioritization score for insurance submissions"
-authors = ["Yonatan Erlich <yonie@dreamhub.ai>"]
+authors = ["Yonatan Erlich <yonila2@gmail.com>"]
 package-mode = false
 
 [tool.poetry.dependencies]

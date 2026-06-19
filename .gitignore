@@ -12,11 +12,10 @@ __pycache__/
 # tooling
 .ruff_cache/
 
-# data / outputs — personal repo holds code only
+# data / heavy inputs — not part of the deliverable (reviewers drop the provided CSVs into data/)
 data/
-reports/
 notebooks/
 handoffs/
+reports/figures/
 *.csv
 *.pdf
-*.html

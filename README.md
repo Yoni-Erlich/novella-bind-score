@@ -9,37 +9,51 @@ and — crucially — **day-0 predictions work** (AUC 0.76, up from a coin-flip)
 
 ---
 
+## Reports (start here)
+Two **self-contained** HTML reports are committed under `reports/` — every chart is embedded, so they need
+no data and no server. They don't render inline on GitHub; to read them:
+
+> open the file on GitHub → **Download raw file** → open the downloaded `.html` in any browser.
+
+| report | what it is |
+|---|---|
+| [`reports/final_report.html`](reports/final_report.html) | the **deliverable** — data story, the 3 tasks, results, limitations |
+| [`reports/pipeline_and_model.html`](reports/pipeline_and_model.html) | study/interview companion — pipeline walkthrough + why-logistic |
+
+Both are **generated from the live code** (numbers can't drift from the model). To rebuild them yourself, see
+[Regenerate the reports](#regenerate-the-reports) below.
+
+---
+
 ## Repository layout
 ```
 challenge_1/
-├── data/                     # raw inputs: features_submissions.csv, features_events.csv
 ├── src/
 │   ├── preprocessing.py      # validate() (full check battery) + clean() (dedupe + impossible-date removal)
 │   ├── features.py           # feature(submission_id, t) + build_panel()            [Task 1]
 │   ├── model.py              # train_bind_model() + bind_score(submission_id, t)    [Task 3]
 │   └── evaluate.py           # metrics, baselines, XGBoost comparison
-├── notebooks/
-│   ├── 01_eda.ipynb          # Phase 1 — the data story (EDA + conclusions)
-│   └── 02_model.ipynb        # modeling + ranking-capability comparison (gains / ROC / leaderboard)
-├── scripts/                  # exploratory checks (data-quality, SHAP, per-t, class-weight, feature search)
-├── reports/                  # written analysis — see reports/index.md
-│   ├── 01_eda_findings.md  02_feature_significance.md  03_model_evaluation.md
-│   ├── 04_data_quality.md  feature_catalog.md  xgboost_findings.md  05_evaluation_explained.md
-├── context.md  ontology.md  STATUS.md   # decision log · glossary · status snapshot
+├── scripts/                  # exploratory checks + the two report builders
+├── reports/
+│   ├── final_report.html         # the deliverable (self-contained)
+│   └── pipeline_and_model.html   # study/interview companion (self-contained)
+├── data/                     # NOT shipped — drop the provided CSVs here (see "Run it")
 └── pyproject.toml
 ```
+> The raw `data/` CSVs, EDA notebooks, and figure sources are part of the full project but are **not** in this
+> repo (it's the code + rendered reports). Everything below runs once you supply the two data files.
 
-## How to run
+## Run it
 ```bash
-poetry install                       # dedicated in-project .venv (Python 3.12)
+# 0. Data — this repo ships without it. Put the two provided files here:
+#      data/features_submissions.csv
+#      data/features_events.csv
 
-# CLI: train + evaluate end-to-end (prints the full results tables)
+# 1. Install (dedicated in-project .venv, Python 3.12)
+poetry install
+
+# 2. Train + evaluate end-to-end (prints the full results tables)
 poetry run python src/evaluate.py
-
-# Notebooks (register the kernel once, then open):
-poetry run python -m ipykernel install --user --name novella-bind-score --display-name "Python (novella-bind-score)"
-poetry run jupyter lab notebooks/01_eda.ipynb     # data story
-poetry run jupyter lab notebooks/02_model.ipynb   # modeling + comparison charts
 ```
 Use the score in code:
 ```python
@@ -49,6 +63,17 @@ subs, events = load_clean("data")
 fit = train_bind_model(subs, events)
 bind_score(submission_id=1, t=7, subs=subs, events=events, fitted=fit)   # -> P(bind)
 ```
+> `bind_score`/`feature` honor the one-row challenge contract and rebuild the panel per call — fine for
+> spot-checks, but use `build_panel(...)` + the fitted model directly for batch scoring.
+
+### Regenerate the reports
+With the data in place, rebuild either HTML from the live code:
+```bash
+poetry run python scripts/build_html_report.py     # -> reports/final_report.html
+poetry run python scripts/build_pipeline_doc.py    # -> reports/pipeline_and_model.html
+```
+
+---
 
 ## Approach (shared across tasks)
 - **One row = `(submission_id, t)`**, `t ∈ {0,7,30}`, scored only while the submission is still **open at `t`**
@@ -56,7 +81,7 @@ bind_score(submission_id=1, t=7, subs=subs, events=events, fitted=fit)   # -> P(
 - **Leakage-safe:** a feature at `(sub, t)` uses only events with `event_date ≤ createdDate + t`; customer-history
   features use only the agent's submissions **resolved before** this one was created; `resolvedDate`/`label` are never features.
 - **Evaluation:** **temporal** train/test split (train on earlier-created submissions, test on later). Feature/transform
-  choices made by cross-validation *inside* train; the test set is scored once. See `reports/05_evaluation_explained.md`.
+  choices made by cross-validation *inside* train; the test set is scored once.
 
 ---
 
@@ -75,7 +100,6 @@ Five features, all leakage-safe (`src/features.py`):
 history**. Ratios, attachments, char-distribution stats, response-latency, velocity/recency/acceleration, and
 calendar features were all tested and **dropped** (no signal beyond volume — verified by partial-correlation +
 incremental CV-AUC). `log1p` on outbound chars tames extreme outliers (a 43k-char email) and won a train-CV A/B.
-Full ledger: `reports/feature_catalog.md`.
 
 ## Task 2 — Feature significance (ranking)
 Ranked by the **linear lens** — univariate AUC (transform-stable) + standardized logistic coefficients:
@@ -90,7 +114,8 @@ Ranked by the **linear lens** — univariate AUC (transform-stable) + standardiz
 
 **Design note:** we also tried **XGBoost + SHAP**, but SHAP ranked a proven-noise calendar feature #1 and the
 genuine top feature last — a high-cardinality artifact of an *overfit* tree (the tree lost to linear). So we rank
-with the linear lens, not SHAP. Details + the cautionary tale: `reports/02_feature_significance.md`, `xgboost_findings.md`.
+with the linear lens, not SHAP. (Univariate AUCs above are measured on the held-out test, for reporting only —
+feature *selection* happens in train CV.)
 
 ## Task 3 — Model & evaluation
 **Model:** pooled **regularized logistic regression** (`class_weight='balanced'`). **Metrics:** ROC-AUC + PR-AUC
@@ -116,12 +141,14 @@ with the linear lens, not SHAP. Details + the cautionary tale: `reports/02_featu
 | no-skill floor | 0.500 |
 
 Also tested: **one pooled model vs three per-`t` models** → 0.744 vs 0.738 (pooled wins, esp. at day-0); class-weight
-tuning → no effect on ranking. Details: `reports/03_model_evaluation.md`.
+tuning → no effect on ranking.
+
+> Full detail, charts, and the cautionary SHAP tale live in the two HTML reports above.
 
 ---
 
 ## What moved the needle
-1. **Data cleaning** — removed 530 duplicate events + 127 impossible pre-creation events (`reports/04_data_quality.md`).
+1. **Data cleaning** — removed 530 duplicate events + 127 impossible pre-creation events.
 2. **Repeat-customer history** (`agent_bind_rate`) — the strongest feature; it also **rescues day-0**, where
    activity-based features are blind. `agent_bind_rate` alone nearly matches the full model on *returning* customers,
    but the full model is needed for the ~50% of submissions from **first-time customers** (where history is blank and
