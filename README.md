@@ -103,13 +103,10 @@ reproduces the same headline numbers the report shows, because the report calls 
 
 ---
 
-## Approach (shared across tasks)
-- **One row = `(submission_id, t)`**, `t ∈ {0,7,30}`, scored only while the submission is still **open at `t`**
-  (a resolved submission isn't a prioritization candidate). One **pooled** model with `t` as a feature.
-- **Leakage-safe:** a feature at `(sub, t)` uses only events with `event_date ≤ createdDate + t`; customer-history
-  features use only the agent's submissions **resolved before** this one was created; `resolvedDate`/`label` are never features.
-- **Evaluation:** **temporal** train/test split (train on earlier-created submissions, test on later). Feature/transform
-  choices made by cross-validation *inside* train; the test set is scored once.
+## Approach & rationale → in the report
+The full thought process — the leakage-safe design, one row per `(submission, t)`, the temporal split, and **why**
+each choice was made — lives in **[`reports/final_report.html`](reports/final_report.html)**. This README is for
+*running* the code; the report is the *thinking*.
 
 ---
 
